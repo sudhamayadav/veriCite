@@ -1,63 +1,172 @@
-# veriCite evidence discovery backend
+# CiteVerify Backend — Scientific Claim & Citation Verification System
 
-This is an initial **academic discovery** API, not yet a claim-verification system.
-Results are candidate papers; they must be read and evaluated before assigning verdicts.
+The CiteVerify backend accepts a scientific manuscript, extracts its atomic cited claims, resolves the cited bibliography entries to canonical scholarly records, retrieves verbatim evidence passages from the cited source papers, and produces a traceable verification report.
 
-## Setup
+A researcher can upload a manuscript and trace four questions for every finding:
+1. **What exactly did I write?** (Atomic claim span and normalized text)
+2. **Which paper did I cite for it?** (Resolved reference identity and DOI)
+3. **What exactly does that paper say, and where?** (Verbatim passage, section, and page provenance)
+4. **Why did the backend assign this verdict?** (Transparent reasoning, issue flags, and semantic verdict)
+
+---
+
+## 1. Installation and Environment Setup
+
+### Prerequisites
+- Python 3.11+
+- Virtual environment recommended
+
+### Installation
 
 ```bash
 cd backend
 python -m venv .venv
-# Windows:
-.venv\\Scripts\\activate
+
+# On Windows:
+.venv\Scripts\activate
+
+# On Linux/macOS:
+source .venv/bin/activate
+
 pip install -r requirements.txt
-copy .env.example .env
-uvicorn main:app --reload
+copy .env.example .env   # On Linux/macOS: cp .env.example .env
 ```
 
-Open http://localhost:8000/docs for interactive API documentation.
+### Environment Variables
 
-- `GET /api/health` — configured search providers
-- `GET /api/evidence/search?q=climate%20change&limit=5` — parallel search
-- `GET /api/evidence/search?q=diabetes&providers=pubmed,europe_pmc` — selected sources
-- `GET /api/evidence/open-access?doi=10.1038/nature12373` — Unpaywall DOI lookup (requires email)
+Configure `.env` as needed:
 
-### Providers
-
-OpenAlex, Semantic Scholar, Crossref, PubMed, Europe PMC and arXiv have working integration code.
-Unpaywall resolves DOI open-access locations. Other specialist sources (CORE, AGRIS,
-OpenCitations, RePEc, Crossmark) are not yet implemented and need separate API-contract,
-authentication and/or data-model work.
-
-Some providers enforce rate limits or API keys; errors are returned under
-`provider_errors` without failing the entire search. For production, add caching,
-retry/backoff, request authentication, monitoring and normalized identifiers.
-
-Never commit `.env` or API keys. This initial implementation does not upload PDFs,
-extract claims, download full texts or use AI to verify them.
-
-### Deterministic checks
-
-From the repository root, run `python -m unittest discover -s backend -p 'test_*.py' -v`.
-These tests mock provider responses; passing tests do not establish live provider availability.
-If your environment requires a SOCKS proxy, install the optional HTTPX dependency with
-`pip install 'httpx[socks]'` before making network requests.
-
-## Verification pipeline scaffold
-
-| Package | Input | Planned output |
+| Variable | Default | Purpose |
 |---|---|---|
-| app/ingestion | PDF, DOCX, LaTeX or raw text | Addressable document blocks, tables, section headers and page or text locations |
-| app/extraction | Document blocks with original citation markers | Bibliography, atomic claims and claim–reference links, including ambiguous grouped citations |
-| app/resolution | Unique bibliography entries | Candidate matches, field mismatches, canonical source ID, retraction and access information |
-| app/retrieval | Resolved source and atomic claim | Ranked passages from that specific source, with verbatim text and page or table locations |
-| app/verification | One claim–paper pair and its evidence | Support verdict or reason to abstain, issue flags, evidence IDs and review status |
-| app/reporting | Results and incomplete assessments | Manuscript-level counts, traceable per-claim results and review flags |
-| app/providers | Requests from pipeline stages | Gemini extraction and classification, Crossref identity matching, OpenAlex source discovery, Semantic Scholar fallback |
+| `GEMINI_API_KEY` | *(empty)* | API key for Gemini models |
+| `GEMINI_MODEL` | `gemini-2.0-flash-lite` | Gemini model for claim extraction and classification |
+| `CROSSREF_MAILTO` | *(empty)* | Contact email for Crossref polite pool |
+| `OPENALEX_EMAIL` | *(empty)* | Contact email for OpenAlex (falls back to CROSSREF_MAILTO) |
+| `SEMANTIC_SCHOLAR_API_KEY` | *(empty)* | Optional API key for Semantic Scholar higher rate limits |
+| `UNPAYWALL_EMAIL` | *(empty)* | Contact email for Unpaywall open-access lookup |
+| `DB_PATH` | `backend/verycite.db` | Path to persistent SQLite database |
+| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Local sentence transformer model for passage retrieval |
+| `MAX_FILE_SIZE_MB` | `50` | Maximum uploaded manuscript size (MB) |
+| `MAX_DOWNLOAD_SIZE_MB` | `20` | Maximum downloaded source paper size (MB) |
+| `PROVIDER_TIMEOUT` | `30` | Timeout in seconds for external scholarly API requests |
+| `MAX_RETRIES` | `3` | Maximum retry attempts for transient API errors |
 
-## Planned API contract
+---
 
-- `POST /verifications` accepts a manuscript and returns a job ID.
-- `GET /verifications/{id}` returns processing status or the final report.
+## 2. Server Startup
 
-The verification job endpoints above are planned. Both `uvicorn main:app` and `uvicorn app.main:app` serve the discovery API and `/health` from the backend directory.
+Start the FastAPI application using Uvicorn:
+
+```bash
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Interactive documentation is available at:
+- Swagger UI: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
+
+---
+
+## 3. Five-Stage Pipeline Architecture
+
+| Stage | Package | Purpose |
+|---|---|---|
+| **Stage 1: Ingest** | `app.ingestion` | Parses PDF and DOCX via Docling; parses LaTeX preserving `\cite{}` keys and bibliography warnings; parses plain text / Markdown retaining character offsets. |
+| **Stage 2: Extract** | `app.extraction` | Parses bibliography entries; detects numeric ranges `[2–5]`, author–year, narrative citations; extracts atomic claims via Gemini structured output; preserves citation groups. |
+| **Stage 3: Resolve** | `app.resolution` | Resolves unique references against Crossref (DOI lookup & scoring), OpenAlex (open access, retractions), and Semantic Scholar fallback. Reports `metadata_mismatch` if DOI resolves to wrong paper. |
+| **Stage 4: Retrieve** | `app.retrieval` | Downloads accessible open-access PDF or abstract; validates non-login payload; extracts passages; embeds locally with Sentence Transformers; lexical boosting for numbers/metrics. |
+| **Stage 5: Verify** | `app.verification` | Classifies evidence per claim–source pair with Gemini; enforces numerical consistency, population scoping, retraction warnings, and rejects invented passage IDs. |
+| **Reporting** | `app.reporting` | Aggregates assessments, counts unique claims and pairs, flags issues, and outputs a complete traceable `VerificationReport`. |
+
+---
+
+## 4. API Endpoints
+
+### Manuscript Verification
+- `POST /verifications`: Upload a manuscript (`.pdf`, `.docx`, `.tex`, `.txt`, `.md`). Returns HTTP 202 with `verification_id`.
+- `GET /verifications/{verification_id}`: Poll status while queued/running; returns full report when completed (with zero external provider calls on re-read); returns 404 for unknown job.
+
+### Academic Discovery & Health
+- `GET /health`: Liveness check (`{"status": "ok"}`).
+- `GET /api/health`: Discovery API search provider status.
+- `GET /api/evidence/search`: Search scholarly providers.
+- `GET /api/evidence/open-access`: Unpaywall open-access lookup.
+
+---
+
+## 5. Working Upload & Report Example
+
+### Submit a manuscript:
+
+```bash
+curl -X POST "http://localhost:8000/verifications" \
+     -F "file=@sample_manuscript.txt"
+```
+
+Response (`HTTP 202 Accepted`):
+```json
+{
+  "verification_id": "job_5943341ec90e4786",
+  "job_id": "job_5943341ec90e4786",
+  "status": "queued",
+  "message": "Manuscript accepted for verification."
+}
+```
+
+### Check progress or retrieve report:
+
+```bash
+curl "http://localhost:8000/verifications/job_5943341ec90e4786"
+```
+
+Response when complete:
+```json
+{
+  "verification_id": "job_5943341ec90e4786",
+  "job_id": "job_5943341ec90e4786",
+  "status": "completed",
+  "report": {
+    "job_id": "job_5943341ec90e4786",
+    "document_id": "3e319f2f-6ff8-44d2-b062-28a5b3cf951a",
+    "total_claims": 3,
+    "total_references": 2,
+    "total_pairs": 3,
+    "assessments": [
+      {
+        "assessment_id": "asmt_02ede8051cd9",
+        "claim_id": "3e319f2f-6ff8-44d2-b062-28a5b3cf951a_c41dc7f0a",
+        "ref_id": "3e319f2f-6ff8-44d2-b062-28a5b3cf951a_r0000",
+        "assessment_status": "assessed",
+        "semantic_verdict": "SUPPORTED",
+        "evidence_passage_ids": [
+          "pass_src_3e319f2f-6ff8-44d2-b062-28a5b3cf951a_r0000_1"
+        ],
+        "explanation": "Source Section 3 confirms the finding with intact metrics: quantization increased classification accuracy from 50% to 60%.",
+        "issue_flags": [],
+        "human_review_status": "pending",
+        "confidence_score": null,
+        "confidence_basis": null
+      }
+    ],
+    "issues": [],
+    "stage_errors": []
+  }
+}
+```
+
+---
+
+## 6. Running Tests
+
+Run the full deterministic unit and acceptance test suites (all provider calls faked for offline reproducibility):
+
+```bash
+# Run acceptance test suite (20 tests covering all Section 9 requirements):
+python -m unittest tests/test_pipeline.py -v
+
+# Run legacy discovery API tests:
+python -m unittest test_api.py -v
+
+# Run interactive walkthrough script:
+python tests/verify_live_flow.py
+```

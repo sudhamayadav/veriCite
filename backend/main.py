@@ -41,3 +41,7 @@ async def open_access(doi: str = Query(min_length=3, max_length=250)):
 @app.get("/health")
 def liveness() -> dict[str, str]:
     return {"status": "ok"}
+
+from app.verification_routes import router as verification_router
+app.include_router(verification_router)
+

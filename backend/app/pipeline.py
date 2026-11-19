@@ -181,6 +181,7 @@ async def run_pipeline(
         # ------------------------------------------------------------------
         update_job(4, JobState.running)
         all_passages: dict[str, list[Passage]] = {}  # source_id → passages
+        updated_sources: dict[str, ResolvedSource] = {}
         try:
             # Group claim texts by ref_id so the retriever can use them as
             # search queries when fetching relevant passages.
@@ -205,11 +206,13 @@ async def run_pipeline(
                         save_resolved_source(updated_src)
                         save_passages(passages)
                         all_passages[src.source_id] = passages
+                        updated_sources[src.ref_id] = updated_src
                     except Exception as exc:
                         stage_errors.append(
                             f"Stage 4 error for ref {src.ref_id}: {exc}"
                         )
                         all_passages[src.source_id] = []
+                        updated_sources[src.ref_id] = src
 
                 await asyncio.gather(*[retrieve_one(src) for src in resolved_sources])
         except Exception as e:
@@ -220,9 +223,10 @@ async def run_pipeline(
         # ------------------------------------------------------------------
         update_job(5, JobState.running)
         all_assessments: list[Assessment] = []
+        final_sources = [updated_sources.get(src.ref_id, src) for src in resolved_sources]
         try:
             source_by_ref: dict[str, ResolvedSource] = {
-                src.ref_id: src for src in resolved_sources
+                src.ref_id: src for src in final_sources
             }
 
             for link in links:
@@ -255,7 +259,7 @@ async def run_pipeline(
             claims=claims,
             refs=refs,
             links=links,
-            sources=resolved_sources,
+            sources=final_sources,
             assessments=all_assessments,
             stage_errors=stage_errors,
         )

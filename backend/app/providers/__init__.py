@@ -8,8 +8,6 @@ from __future__ import annotations
 import json
 import logging
 
-import google.genai as genai
-
 from app.config import GEMINI_API_KEY, GEMINI_MODEL
 
 logger = logging.getLogger(__name__)
@@ -19,8 +17,16 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _make_client() -> genai.Client:
+def _make_client():
+    try:
+        import google.genai as genai
+    except ImportError:
+        try:
+            from google import genai
+        except ImportError as exc:
+            raise RuntimeError(f"google-genai package is not installed: {exc}") from exc
     return genai.Client(api_key=GEMINI_API_KEY)
+
 
 
 # ---------------------------------------------------------------------------

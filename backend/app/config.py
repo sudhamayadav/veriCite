@@ -53,10 +53,13 @@ EMBEDDING_MODEL: str = os.getenv(
 # ---------------------------------------------------------------------------
 
 _db_path_raw: str = os.getenv("DB_PATH", "")
-if _db_path_raw:
-    DB_PATH: str = str(Path(_db_path_raw).resolve())
+if _db_path_raw == ":memory:":
+    DB_PATH: str = ":memory:"
+elif _db_path_raw:
+    DB_PATH = str(Path(_db_path_raw).resolve())
 else:
     DB_PATH = str((_BACKEND_DIR / "verycite.db").resolve())
+
 
 # ---------------------------------------------------------------------------
 # Operational limits

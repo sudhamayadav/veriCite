@@ -451,7 +451,10 @@ async def extract_claims_and_links(
                 claims.append(claim)
 
                 # Build ClaimReferenceLinks
-                ref_ids_for_claim: list[str] = claim_dict.get("ref_ids", []) or allowed_ref_ids
+                raw_claim_refs = claim_dict.get("ref_ids", []) or allowed_ref_ids
+                ref_ids_for_claim: list[str] = [
+                    rid for rid in raw_claim_refs if rid in allowed_ref_ids
+                ]
                 group_id = (
                     f"group_{block.block_id}_{marker_index}"
                     if is_ambiguous_group or len(ref_ids_for_claim) == len(allowed_ref_ids)
